@@ -1,85 +1,120 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from scipy.optimize import linprog
+from pdf_generator import generate_pdf
 
 app = Flask(__name__)
 CORS(app)
 
-# Excel betöltése
-excel_path = "Takarmány kalkulátor programhoz.xlsx"
-sheet_name = "Adatbázis"
-ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
+@app.route('/')
+def home():
+    return 'Takarmány API működik'
 
-# Átalakítás (N, O, P oszlopokból összevonás)
-ingredient_data = ingredient_data.dropna(subset=["N", "O", "P"], how="all").copy()
-ingredient_data["RowID"] = ingredient_data.index
-melted = ingredient_data.melt(id_vars=["RowID"], value_vars=["N", "O", "P"], value_name="Name").dropna()
-merged_data = melted.merge(ingredient_data, left_on="RowID", right_index=True)
-
-# Egyszerűsített táblázat a nevek alapján
-merged_data = merged_data.rename(columns={
-    "Name": "ingredient_name",
-    "ME MJ/kg": "me",
-    "Nyers fehérje": "protein",
-    "Nyers zsír min.": "fat",
-    "Nyers rost": "fiber",
-    "Ca": "ca",
-    "P": "p",
-    "Lizin": "lysine",
-    "Metionin": "methionine"
-})
-
-@app.route("/calculate", methods=["POST"])
+@app.route('/calculate', methods=['POST'])
 def calculate():
     try:
         data = request.get_json()
+        species = data.get('species')
+        ingredients = data.get('ingredients', [])
+        constraints = data.get('constraints', {})
+        max_amount = constraints.get('max_amount', {})
+        exclude = constraints.get('exclude', [])
+        prices = data.get('prices', {})
+        soy_free = data.get('soy_free', False)
 
-        species = data.get("species")
-        ingredients_input = data.get("ingredients", [])
-        constraints = data.get("constraints", {})
+        # Excel beolvasása
+        excel_path = 'Takarmány kalkulátor programhoz.xlsx'
+        sheet_name = 'Adatbázis'
+        ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
 
-        if not ingredients_input:
-            return jsonify({"error": "Nem adtál meg egy alapanyagot sem."}), 400
+        # Csak a 'Fajta' nevű alapanyagokra szűrjük a táblát
+        ingredient_data = ingredient_data.dropna(subset=["Fajta"], how="all").copy()
 
-        df = merged_data[merged_data["ingredient_name"].isin(ingredients_input)].copy()
+        # Alapanyagok szűrése
+        ingredient_data = ingredient_data[ingredient_data["Fajta"].isin(ingredients)]
 
-        if df.empty:
-            return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
+        if soy_free:
+            ingredient_data = ingredient_data[~ingredient_data["Fajta"].str.contains("szója", case=False, na=False)]
 
-        nutrient_columns = ["protein", "me", "fiber", "fat", "ca", "p", "lysine", "methionine"]
+        if exclude:
+            ingredient_data = ingredient_data[~ingredient_data["Fajta"].isin(exclude)]
 
-        A = df[nutrient_columns].fillna(0).to_numpy().T
-        c = np.ones(len(df))  # minimalizáljuk az össztömeget
+        if ingredient_data.empty:
+            return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
 
-        # Cél: legalább ennyit teljesítsen a tápanyagokból
-        target_nutrients = {
-            "protein": 16,
-            "me": 11,
-            "fiber": 5,
-            "fat": 2,
-            "ca": 0.8,
-            "p": 0.6,
-            "lysine": 0.5,
-            "methionine": 0.25
+        nutrients = ["ME MJ/kg", "Nyers fehérje", "Nyers zsír min.", "Nyers rost", "Ca", "P", "Lizin", "Metionin"]
+        nutrient_matrix = ingredient_data[nutrients].fillna(0).to_numpy().T
+        bounds = []
+
+        for name in ingredient_data["Fajta"]:
+            min_val = 0
+            max_val = max_amount.get(name, None)
+            if max_val is not None:
+                bounds.append((min_val, max_val))
+            else:
+                bounds.append((min_val, None))
+
+        target = {
+            "ME MJ/kg": 11,
+            "Nyers fehérje": 17,
+            "Nyers zsír min.": 3.5,
+            "Nyers rost": 4.5,
+            "Ca": 3.6,
+            "P": 0.33,
+            "Lizin": 0.68,
+            "Metionin": 0.25,
         }
 
-        b = np.array([target_nutrients[n] for n in nutrient_columns])
-        res = linprog(c=c, A_ub=-A, b_ub=-b, bounds=(0, None), method='highs')
+        target_array = np.array([target[n] for n in nutrients])
+        cost = np.array([prices.get(name, 0) for name in ingredient_data["Fajta"]])
 
-        if res.success:
-            result = {
-                "species": species,
-                "target_nutrition": target_nutrients,
-                "recommendation": dict(zip(df["ingredient_name"], res.x.round(3).tolist()))
+        result = linprog(
+            c=cost,
+            A_eq=nutrient_matrix,
+            b_eq=target_array,
+            bounds=bounds,
+            method='highs'
+        )
+
+        if result.success:
+            optimized_mix = {
+                name: round(val, 2)
+                for name, val in zip(ingredient_data["Fajta"], result.x)
+                if val > 0
             }
-            return jsonify(result)
+
+            total_nutrients = nutrient_matrix @ result.x
+            total_nutrients_dict = {
+                nutrient: round(val, 2)
+                for nutrient, val in zip(nutrients, total_nutrients)
+            }
+
+            return jsonify({
+                "recommendation": optimized_mix,
+                "species": species,
+                "target_nutrition": target,
+                "calculated_nutrition": total_nutrients_dict,
+            })
         else:
-            return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
+            return jsonify({
+                "error": "A megadott alapanyagokkal nem érhető el az optimális keverék. Próbáljon meg több vagy más alapanyagot."
+            }), 400
 
     except Exception as e:
         return jsonify({"error": f"Hiba: {str(e)}"}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+
+@app.route('/download', methods=['POST'])
+def download_pdf():
+    try:
+        data = request.get_json()
+        filename = generate_pdf(data)
+        return send_file(filename, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": f"PDF generálási hiba: {str(e)}"}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
