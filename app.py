@@ -1,96 +1,91 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import pandas as pd
+import numpy as np
 from scipy.optimize import linprog
-from pdf_generator import generate_pdf
 
 app = Flask(__name__)
+CORS(app)  # <- Engedélyezi a külső kéréseket, pl. a frontendről
 
-excel_path = "TakarMány kalkulátor programhoz.xlsx"
+# Excel fájl és munkalap
+excel_path = "Takarmány kalkulátor programhoz.xlsx"
 sheet_name = "Adatbázis"
 
-@app.route("/calculate", methods=["POST"])
+# Kalkulációs végpont
+@app.route('/calculate', methods=['POST'])
 def calculate():
     try:
-        data = request.get_json()
-
-        species = data.get("species")
+        data = request.json
+        species = data.get("species", "").lower()
         ingredients = data.get("ingredients", [])
         constraints = data.get("constraints", {})
         exclude = data.get("exclude", [])
         prices = data.get("prices", {})
 
-        ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
-        ingredient_data = ingredient_data[["N", "O", "P", "ME MJ/kg", "Nyers fehérje", "Nyers rost", "Nyers zsír",
-                                           "Ca", "P", "Lizin", "Metionin"]].copy()
-        ingredient_data["Name"] = ingredient_data[["N", "O", "P"]].bfill(axis=1).iloc[:, 0]
-        ingredient_data = ingredient_data.dropna(subset=["Name"])
-        ingredient_data = ingredient_data.reset_index(drop=True)
+        if not species or not ingredients:
+            return jsonify({"error": "Hiányzó faj vagy alapanyaglista."}), 400
 
-        available = ingredient_data[ingredient_data["Name"].isin(ingredients) & ~ingredient_data["Name"].isin(exclude)]
+        # Excel beolvasás
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+        df["Név"] = df[["N", "O", "P"]].bfill(axis=1).iloc[:, 0]
 
-        if available.empty:
+        # Csak azokat az alapanyagokat használjuk, amik a kérésben szerepelnek
+        df = df[df["Név"].isin(ingredients)]
+        if df.empty:
             return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
 
-        A = []
-        b = []
-
-        target_nutrients = {
-            "ME MJ/kg": 11.5,
-            "Nyers fehérje": 16,
-            "Nyers rost": 5,
-            "Nyers zsír": 3,
-            "Ca": 3.5,
-            "P": 0.45,
-            "Lizin": 0.7,
-            "Metionin": 0.35
-        }
-
-        if species == "tyúk":
-            target_nutrients.update({
-                "ME MJ/kg": 11.5,
-                "Nyers fehérje": 16,
-                "Ca": 3.5,
-                "P": 0.45
-            })
-
-        for nutrient, target in target_nutrients.items():
-            row = available[nutrient].values
-            A.append(row)
-            b.append(target)
+        # Paraméterek
+        nutrient_cols = ["ME MJ/kg", "Nyers fehérje", "Nyers rost", "Nyers zsír", "Ca", "P", "Lizin", "Metionin"]
+        A = df[nutrient_cols].to_numpy().T
+        b_min = np.array([4, 16, 3, 2, 0.8, 0.6, 0.5, 0.4])  # cél minimum tápértékek
+        b_max = np.array([12, 22, 8, 5, 1.2, 1.0, 1.0, 0.7])
 
         bounds = []
-        for name in available["Name"]:
-            min_val = constraints.get("min_amount", {}).get(name, 0)
-            max_val = constraints.get("max_amount", {}).get(name, None)
-            bounds.append((min_val, max_val))
+        names = df["Név"].tolist()
+        for name in names:
+            if name in exclude:
+                bounds.append((0, 0))
+            elif name in constraints.get("max_amount", {}):
+                max_kg = constraints["max_amount"][name]
+                bounds.append((0, max_kg))
+            else:
+                bounds.append((0, None))
 
-        c = []
-        for name in available["Name"]:
-            c.append(prices.get(name, 0))
+        # Ár minimalizálás
+        costs = []
+        for name in names:
+            costs.append(prices.get(name, 0))
+        c = np.array(costs)
 
-        res = linprog(c=c, A_eq=A, b_eq=b, bounds=bounds, method="highs")
+        # Lineáris programozás: két oldalra szedve
+        A_ub = np.vstack([A, -A])
+        b_ub = np.hstack([b_max, -b_min])
 
-        if res.success:
-            amounts = res.x
-            result = {}
-            for i, name in enumerate(available["Name"]):
-                result[name] = round(amounts[i], 3)
+        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
 
-            total = sum(amounts)
-            nutrients_result = {}
-            for i, (nutrient, target) in enumerate(target_nutrients.items()):
-                actual = sum(available.iloc[:, 3 + i] * amounts) / total
-                nutrients_result[nutrient] = round(actual, 2)
+        if not result.success:
+            return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
 
-            # PDF generálása
-            pdf_path = generate_pdf(result, nutrients_result, species)
-            return send_file(pdf_path, as_attachment=True)
+        quantities = result.x.round(2)
+        recommendation = {name: q for name, q in zip(names, quantities) if q > 0}
 
-        return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
+        return jsonify({
+            "species": species,
+            "recommendation": recommendation,
+            "target_nutrition": {
+                "min": b_min.tolist(),
+                "max": b_max.tolist(),
+                "fields": nutrient_cols
+            }
+        })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Hiba: {str(e)}"}), 500
 
+# Főoldal (opcionális teszt)
+@app.route('/')
+def index():
+    return "<h1>Takarmány Kalkulátor API</h1><p>Használd a <code>/calculate</code> végpontot POST kérésekkel.</p>"
 
-if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=10000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
