@@ -3,9 +3,9 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# Tápanyag- és alapanyag adatbázis betöltése
+# Alapanyag-adatok beolvasása Excelből
 ingredient_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
-ingredient_data = ingredient_data.iloc[:, :14]  # Csak az első 14 oszlopot használjuk
+ingredient_data = ingredient_data.iloc[:, :14]  # csak az első 14 oszlop
 ingredient_data.columns = [
     "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
     "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2", "NaN3"
@@ -15,7 +15,7 @@ ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
 for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
     ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
 
-# Faj-specifikus tápanyagigények (fix példaértékek a CSV alapján)
+# Faj-specifikus tápanyagcélértékek (egyszerűsített)
 specs = {
     "fürj": {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5, "Lysine": 1.2, "Methionine": 0.5},
     "tyúk": {"Protein": 17.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 11.5, "Calcium": 3.5, "Phosphorus": 0.4, "Lysine": 0.9, "Methionine": 0.4},
@@ -24,34 +24,31 @@ specs = {
     "pulyka": {"Protein": 25.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 12.5, "Calcium": 1.5, "Phosphorus": 0.5, "Lysine": 1.3, "Methionine": 0.55}
 }
 
+# Részleges szövegegyezés keresés
+def matches_any(ingredient, search_terms):
+    return any(term.lower() in str(ingredient).lower() for term in search_terms)
+
 @app.route('/calculate', methods=['POST'])
 def calculate():
     data = request.get_json()
     species = data.get("species", "").lower()
-    user_ingredients = data.get("ingredients", [])  # lista: ["kukorica", "napraforgó"]
+    user_ingredients = data.get("ingredients", [])
 
     if species not in specs:
         return jsonify({"error": "Érvénytelen faj!"}), 400
 
     target = specs[species]
 
-    # Szűrés: ha van megadott alapanyag, csak azt használjuk, egyébként az összeset
+    # Részleges keresés az alapanyagokra
     if user_ingredients:
-        def matches_any(ingredient, search_terms):
-    return any(term.lower() in str(ingredient).lower() for term in search_terms)
-
-if user_ingredients:
-    df = ingredient_data[ingredient_data["Ingredient"].apply(lambda x: matches_any(x, user_ingredients))]
-else:
-    df = ingredient_data.copy()
-
+        df = ingredient_data[ingredient_data["Ingredient"].apply(lambda x: matches_any(x, user_ingredients))]
     else:
         df = ingredient_data.copy()
 
     if df.empty:
         return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
 
-    # Egyszerű algoritmus: az első 3-4 legjobb fehérjeforrást kombinálja (arányosan)
+    # Top 4 legmagasabb fehérjetartalmú alapanyagból arányos keverék
     top_ingredients = df.sort_values(by="Protein", ascending=False).head(4)
     top_ingredients["Ratio"] = 1 / len(top_ingredients)
 
@@ -76,5 +73,6 @@ else:
         "recommendation": output
     })
 
+# Render-specifikus indítás (külső port eléréshez)
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
