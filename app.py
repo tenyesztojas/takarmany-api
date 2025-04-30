@@ -15,9 +15,9 @@ all_ingredient_names = all_ingredient_names.dropna().astype(str).str.strip().res
 ingredient_data = excel_data.iloc[:, :13]
 ingredient_data.columns = [
     "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
-    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1"
+    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2"
 ]
-ingredient_data = ingredient_data.drop(columns=["NaN1"])
+ingredient_data = ingredient_data.drop(columns=["NaN1", "NaN2"])
 ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
 for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
     ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
