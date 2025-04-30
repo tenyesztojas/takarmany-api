@@ -6,8 +6,8 @@ app = Flask(__name__)
 # Excel betöltés
 excel_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
 
-# Alapanyagnevek: O, P, Q oszlopok (index 13, 14, 15)
-combined_ingredients = excel_data.iloc[:, [13, 14, 15]]
+# Alapanyagnevek: N, O, P oszlopok (index: 12, 13, 14)
+combined_ingredients = excel_data.iloc[:, [12, 13, 14]]
 all_ingredient_names = pd.Series(pd.unique(combined_ingredients.values.ravel()))
 all_ingredient_names = all_ingredient_names.dropna().astype(str).str.strip().reset_index(drop=True)
 
@@ -15,9 +15,9 @@ all_ingredient_names = all_ingredient_names.dropna().astype(str).str.strip().res
 ingredient_data = excel_data.iloc[:, :13]
 ingredient_data.columns = [
     "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
-    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2"
+    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1"
 ]
-ingredient_data = ingredient_data.drop(columns=["NaN1", "NaN2"])
+ingredient_data = ingredient_data.drop(columns=["NaN1"])
 ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
 for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
     ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
@@ -49,7 +49,7 @@ def calculate():
 
     target = specs[species]
 
-    # Keresés az új alapanyagnevek alapján
+    # Szűrés a részleges egyezés alapján az N–O–P oszlopból
     if user_ingredients:
         matching_names = all_ingredient_names[all_ingredient_names.apply(lambda x: matches_any(x, user_ingredients))]
         df = ingredient_data[ingredient_data["Ingredient"].isin(matching_names)]
@@ -59,7 +59,7 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
 
-    # Top 4 legfehérjésebb
+    # Top 4 legfehérjésebb alapanyagból keverék
     top_ingredients = df.sort_values(by="Protein", ascending=False).head(4)
     top_ingredients["Ratio"] = 1 / len(top_ingredients)
 
