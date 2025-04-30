@@ -25,12 +25,13 @@ melted_names = name_columns.melt(id_vars="RowID", value_name="Name").drop(column
 melted_names = melted_names[melted_names["Name"] != "nan"]
 melted_names["Name"] = melted_names["Name"].astype(str).str.strip()
 
+# faj-specifikus tápanyag célértékek
 specs = {
-    "fürj": {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5, "Lysine": 1.2, "Methionine": 0.5},
-    "tyúk": {"Protein": 17.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 11.5, "Calcium": 3.5, "Phosphorus": 0.4, "Lysine": 0.9, "Methionine": 0.4},
-    "kacsa": {"Protein": 17.0, "Fat": 4.0, "Fiber": 5.5, "ME_MJkg": 11.5, "Calcium": 1.1, "Phosphorus": 0.45, "Lysine": 0.8, "Methionine": 0.35},
-    "liba": {"Protein": 16.0, "Fat": 3.5, "Fiber": 6.5, "ME_MJkg": 10.5, "Calcium": 0.9, "Phosphorus": 0.4, "Lysine": 0.75, "Methionine": 0.3},
-    "pulyka": {"Protein": 25.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 12.5, "Calcium": 1.5, "Phosphorus": 0.5, "Lysine": 1.3, "Methionine": 0.55}
+    "fürj":   {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5,  "Lysine": 1.2,  "Methionine": 0.5},
+    "tyúk":   {"Protein": 17.0,  "Fat": 4.0,  "Fiber": 4.5,  "ME_MJkg": 11.5, "Calcium": 3.5,  "Phosphorus": 0.4,  "Lysine": 0.9,  "Methionine": 0.4},
+    "kacsa":  {"Protein": 17.0,  "Fat": 4.0,  "Fiber": 5.5,  "ME_MJkg": 11.5, "Calcium": 1.1,  "Phosphorus": 0.45, "Lysine": 0.8,  "Methionine": 0.35},
+    "liba":   {"Protein": 16.0,  "Fat": 3.5,  "Fiber": 6.5,  "ME_MJkg": 10.5, "Calcium": 0.9,  "Phosphorus": 0.4,  "Lysine": 0.75, "Methionine": 0.3},
+    "pulyka": {"Protein": 25.0,  "Fat": 4.0,  "Fiber": 4.5,  "ME_MJkg": 12.5, "Calcium": 1.5,  "Phosphorus": 0.5,  "Lysine": 1.3,  "Methionine": 0.55}
 }
 
 def matches_any(name, search_terms):
@@ -55,7 +56,7 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
 
-    # Alapanyag kizárás
+    # Kizárt alapanyagok szűrése
     exclude = constraints.get("exclude", [])
     if exclude:
         exclude_ids = melted_names[melted_names["Name"].apply(lambda x: matches_any(x, exclude))]["RowID"].unique()
@@ -64,6 +65,7 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Minden alapanyag kizárásra került."}), 400
 
+    # Optimalizálás
     nutrients = ["Protein", "Fat", "Fiber", "ME_MJkg", "Calcium", "Phosphorus", "Lysine", "Methionine"]
     target = specs[species]
     A = df[nutrients].fillna(0).to_numpy().T
@@ -72,13 +74,12 @@ def calculate():
 
     bounds = []
     max_amount = constraints.get("max_amount_kg", {})
+    min_amount = constraints.get("min_amount_kg", {})
     for _, row in df.iterrows():
         name = row["Ingredient"]
-        if name in max_amount:
-            limit = max_amount[name]
-            bounds.append((0, limit / 100))  # kg arányra váltás
-        else:
-            bounds.append((0, 1))
+        min_val = min_amount.get(name, 0) / 100
+        max_val = max_amount.get(name, 1) / 100
+        bounds.append((min_val, max_val))
 
     try:
         res = linprog(
