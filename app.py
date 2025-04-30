@@ -3,19 +3,26 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# Alapanyag-adatok beolvasása Excelből
-ingredient_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
-ingredient_data = ingredient_data.iloc[:, :14]  # csak az első 14 oszlop
+# Betöltjük az Excel-táblát
+excel_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
+
+# O, P, Q oszlopokból kivesszük az alapanyagneveket (index: 13, 14, 15)
+combined_ingredients = excel_data.iloc[:, [13, 14, 15]]
+all_ingredient_names = pd.Series(pd.unique(combined_ingredients.values.ravel()))
+all_ingredient_names = all_ingredient_names.dropna().astype(str).str.strip().reset_index(drop=True)
+
+# Eredeti tápérték táblázat (M oszloptól balra): 0–12 oszlopok
+ingredient_data = excel_data.iloc[:, :13]
 ingredient_data.columns = [
     "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
-    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2", "NaN3"
+    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN"
 ]
-ingredient_data = ingredient_data.drop(columns=["NaN1", "NaN2", "NaN3"])
+ingredient_data = ingredient_data.drop(columns=["NaN"])
 ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
 for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
     ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
 
-# Faj-specifikus tápanyagcélértékek (egyszerűsített)
+# Faj-specifikus tápanyagcélértékek
 specs = {
     "fürj": {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5, "Lysine": 1.2, "Methionine": 0.5},
     "tyúk": {"Protein": 17.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 11.5, "Calcium": 3.5, "Phosphorus": 0.4, "Lysine": 0.9, "Methionine": 0.4},
@@ -24,7 +31,7 @@ specs = {
     "pulyka": {"Protein": 25.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 12.5, "Calcium": 1.5, "Phosphorus": 0.5, "Lysine": 1.3, "Methionine": 0.55}
 }
 
-# Részleges szövegegyezés NaN-védelemmel
+# Részleges szövegegyezés
 def matches_any(ingredient, search_terms):
     if pd.isnull(ingredient):
         return False
@@ -42,16 +49,17 @@ def calculate():
 
     target = specs[species]
 
-    # Részleges keresés az alapanyagokra
+    # Szűrés a részleges egyezés alapján az O, P, Q oszlopból származó nevek között
     if user_ingredients:
-        df = ingredient_data[ingredient_data["Ingredient"].apply(lambda x: matches_any(x, user_ingredients))]
+        matching_names = all_ingredient_names[all_ingredient_names.apply(lambda x: matches_any(x, user_ingredients))]
+        df = ingredient_data[ingredient_data["Ingredient"].isin(matching_names)]
     else:
         df = ingredient_data.copy()
 
     if df.empty:
         return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
 
-    # Top 4 legmagasabb fehérjetartalmú alapanyagból arányos keverék
+    # Top 4 legfehérjésebb alapanyagból keverék
     top_ingredients = df.sort_values(by="Protein", ascending=False).head(4)
     top_ingredients["Ratio"] = 1 / len(top_ingredients)
 
@@ -76,6 +84,6 @@ def calculate():
         "recommendation": output
     })
 
-# Render-specifikus indítás (külső port eléréshez)
+# Render-specifikus indítás
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
