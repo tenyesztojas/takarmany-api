@@ -2,110 +2,132 @@ from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
 from scipy.optimize import linprog
-from pdf_generator import generate_pdf  # külső fájlból importálva
+from pdf_generator import generate_pdf
 
 app = Flask(__name__)
 
-# Excel betöltés
-excel_path = "TakarMány kalkulátor programhoz.xlsx"
-sheet_name = "Adatbázis"
-ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
-
-# N, O, P oszlopok egyesítése alapanyagnévhez
-ingredient_data["RowID"] = ingredient_data.index
-melted_names = ingredient_data[["RowID", "N", "O", "P"]].melt(
-    id_vars="RowID", value_name="Name"
-).dropna()
-
-# Tápanyagoszlopok
-nutrients = ["ME MJ/kg", "Nyers fehérje", "Nyers zsír", "Nyers rost", "Ca", "P", "Lizin", "Metionin"]
-nutrient_columns = ["E", "F", "G", "H", "I", "J", "K", "L"]  # Opcionális, ha oszlopnevek lennének
-
-# Tápanyag-értékek
-nutrient_matrix = ingredient_data[nutrients].values.T  # shape: (8, N)
-target_values = {
-    "ME MJ/kg": 11,
-    "Nyers fehérje": 17,
-    "Nyers zsír": 3,
-    "Nyers rost": 5,
-    "Ca": 1,
-    "P": 0.6,
-    "Lizin": 0.65,
-    "Metionin": 0.3,
-}
-
+@app.route("/")
+def home():
+    return "Tenyésztojás takarmánykalkulátor API"
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
     try:
-        data = request.get_json()
+        data = request.json
         species = data.get("species")
         ingredients = data.get("ingredients", [])
         constraints = data.get("constraints", {})
-        max_amounts = constraints.get("max_amount", {})
-        exclude = constraints.get("exclude", [])
         prices = data.get("prices", {})
+        exclude = data.get("exclude", [])
 
-        if not ingredients:
-            return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
+        if not species or not ingredients:
+            return jsonify({"error": "Hiányzó faj vagy alapanyaglista."}), 400
 
-        # Az engedélyezett sorok kiszűrése a felhasználói nevek alapján
-        selected_indices = []
-        for name in ingredients:
-            rows = melted_names[melted_names["Name"].str.lower() == name.lower()]
-            selected_indices.extend(rows["RowID"].values.tolist())
+        # Excel fájl betöltése (új fájlnév!)
+        excel_path = "Takarmany_kalkulator.xlsx"
+        sheet_name = "Adatbázis"
+        ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
 
-        if not selected_indices:
-            return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
+        # Alapanyagnevek beolvasása az N-O-P oszlopból
+        melted_names = ingredient_data[["RowID", "N", "O", "P"]].melt(id_vars="RowID", value_name="Name").dropna()
+        valid_names = melted_names["Name"].astype(str).str.lower().tolist()
 
-        selected_df = ingredient_data.loc[selected_indices].copy()
-        selected_df["Name"] = melted_names.set_index("RowID").loc[selected_indices]["Name"].values
+        # Részleges egyezés alapján kiválasztott alapanyagok
+        selected = []
+        for user_input in ingredients:
+            match = next((n for n in valid_names if user_input.lower() in n), None)
+            if match:
+                selected.append(match)
 
-        # Kizárt alapanyagok kiszűrése
-        if exclude:
-            selected_df = selected_df[~selected_df["Name"].isin(exclude)]
+        if not selected:
+            return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
 
-        if selected_df.empty:
-            return jsonify({"error": "A megadott alapanyagokkal nem érhető el az optimális keverék. Próbáljon meg több vagy más alapanyagot."}), 400
+        df = ingredient_data.copy()
+        df["Name"] = (
+            df[["N", "O", "P"]]
+            .astype(str)
+            .agg(" ".join, axis=1)
+            .str.lower()
+        )
 
-        # Célérték vektor
-        b = np.array([target_values[n] for n in nutrients])
-        A = selected_df[nutrients].T.values  # (8 x N)
-        c = [prices.get(name, 0.0) for name in selected_df["Name"]]
+        df = df[df["Name"].apply(lambda name: any(term.lower() in name for term in selected))]
+        if df.empty:
+            return jsonify({"error": "Nincs kiválasztott alapanyag."}), 400
 
-        bounds = []
-        for name in selected_df["Name"]:
-            max_val = max_amounts.get(name, 100)
-            bounds.append((0, max_val))
+        # Tápanyagcélok fajonként
+        target_nutrition = {
+            "tyúk": {"protein": 16, "energy": 11.5, "fiber": 5},
+            "kacsa": {"protein": 17, "energy": 11.7, "fiber": 6},
+        }
 
-        # Optimalizálás
-        result = linprog(c=c, A_eq=A, b_eq=b, bounds=bounds, method="highs")
+        if species not in target_nutrition:
+            return jsonify({"error": "Ismeretlen faj."}), 400
 
-        if result.success:
-            quantities = result.x
-            recommendation = []
-            for name, qty in zip(selected_df["Name"], quantities):
-                if qty > 0.0001:
-                    recommendation.append({"name": name, "quantity": round(qty, 2)})
+        protein = df["Nyers fehérje"]
+        energy = df["ME MJ/kg"]
+        fiber = df["Nyers rost"]
+        cost = df["Ft/Kg"].fillna(9999)
 
-            response = {
-                "recommendation": recommendation,
-                "species": species,
-                "target_nutrition": target_values,
-            }
+        num_vars = len(df)
+        c = cost.to_numpy()
+        A = [
+            -protein.to_numpy(),
+            -energy.to_numpy(),
+            fiber.to_numpy()
+        ]
+        b = [
+            -target_nutrition[species]["protein"],
+            -target_nutrition[species]["energy"],
+            target_nutrition[species]["fiber"]
+        ]
 
-            # PDF generálás
-            if data.get("generate_pdf", False):
-                pdf_bytes = generate_pdf(response)
-                response["pdf_base64"] = pdf_bytes.decode("utf-8")
+        bounds = [(0, None)] * num_vars
 
-            return jsonify(response)
-        else:
-            return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
+        # Felhasználói korlátozások
+        if "max_amount" in constraints:
+            for name, max_kg in constraints["max_amount"].items():
+                for i, row in df.iterrows():
+                    if name.lower() in row["Name"]:
+                        bounds[i] = (0, float(max_kg))
+
+        if "exclude" in data:
+            for name in exclude:
+                for i, row in df.iterrows():
+                    if name.lower() in row["Name"]:
+                        bounds[i] = (0, 0)
+
+        if "prices" in data:
+            for name, price in prices.items():
+                for i, row in df.iterrows():
+                    if name.lower() in row["Name"]:
+                        c[i] = float(price)
+
+        res = linprog(c, A_ub=A, b_ub=b, bounds=bounds, method="highs")
+        if res.success:
+            df["Mennyiség (kg)"] = res.x.round(2)
+            df = df[df["Mennyiség (kg)"] > 0]
+
+            összes = df["Mennyiség (kg)"].sum()
+            fehérje = (df["Nyers fehérje"] * df["Mennyiség (kg)"]).sum() / összes
+            energia = (df["ME MJ/kg"] * df["Mennyiség (kg)"]).sum() / összes
+            rost = (df["Nyers rost"] * df["Mennyiség (kg)"]).sum() / összes
+
+            pdf = generate_pdf(df, species, fehérje, energia, rost)
+            return jsonify({
+                "recommendation": df[["Name", "Mennyiség (kg)"]].to_dict(orient="records"),
+                "target_nutrition": {
+                    "protein": round(fehérje, 2),
+                    "energy": round(energia, 2),
+                    "fiber": round(rost, 2)
+                },
+                "pdf_base64": pdf
+            })
+
+        return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
