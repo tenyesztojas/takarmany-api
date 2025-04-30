@@ -24,9 +24,12 @@ specs = {
     "pulyka": {"Protein": 25.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 12.5, "Calcium": 1.5, "Phosphorus": 0.5, "Lysine": 1.3, "Methionine": 0.55}
 }
 
-# Részleges szövegegyezés keresés
+# Részleges szövegegyezés NaN-védelemmel
 def matches_any(ingredient, search_terms):
-    return any(term.lower() in str(ingredient).lower() for term in search_terms)
+    if pd.isnull(ingredient):
+        return False
+    ingredient_str = str(ingredient).lower()
+    return any(term.lower() in ingredient_str for term in search_terms)
 
 @app.route('/calculate', methods=['POST'])
 def calculate():
