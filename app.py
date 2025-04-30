@@ -21,7 +21,11 @@ ingredient_data.columns = [
 ingredient_data = ingredient_data.drop(columns=["NaN1", "NaN2"])
 ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
 
-# Azonosító hozzárendelés a sorokhoz
+# Konverzió számra
+for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
+    ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
+
+# Sorazonosító hozzárendelése
 ingredient_data["RowID"] = ingredient_data.index
 name_columns["RowID"] = name_columns.index
 
@@ -30,7 +34,7 @@ melted_names = name_columns.melt(id_vars="RowID", value_name="Name").drop(column
 melted_names["Name"] = melted_names["Name"].astype(str).str.strip()
 melted_names = melted_names[melted_names["Name"] != "nan"]
 
-# Fajspecifikus tápanyagcélok
+# Fajspecifikus célértékek
 specs = {
     "fürj": {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5, "Lysine": 1.2, "Methionine": 0.5},
     "tyúk": {"Protein": 17.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 11.5, "Calcium": 3.5, "Phosphorus": 0.4, "Lysine": 0.9, "Methionine": 0.4},
@@ -39,7 +43,7 @@ specs = {
     "pulyka": {"Protein": 25.0, "Fat": 4.0, "Fiber": 4.5, "ME_MJkg": 12.5, "Calcium": 1.5, "Phosphorus": 0.5, "Lysine": 1.3, "Methionine": 0.55}
 }
 
-# Egyezés vizsgálat
+# Részleges egyezés
 def matches_any(name, search_terms):
     name_lower = str(name).lower()
     return any(term.lower() in name_lower for term in search_terms)
@@ -55,7 +59,7 @@ def calculate():
 
     target = specs[species]
 
-    # Részleges egyezés a felhasználó által megadott keresőszavakra
+    # Szűrés részleges egyezéssel
     if user_ingredients:
         matching_rows = melted_names[melted_names["Name"].apply(lambda x: matches_any(x, user_ingredients))]
         matched_row_ids = matching_rows["RowID"].unique()
@@ -76,8 +80,8 @@ def calculate():
             mix.append({
                 "ingredient": row["Ingredient"],
                 "amount_kg": round(amount_kg * row["Ratio"], 2),
-                "protein": round(row["Protein"], 2),
-                "energy": round(row["ME_MJkg"], 2)
+                "protein": round(float(row["Protein"]), 2) if pd.notna(row["Protein"]) else 0,
+                "energy": round(float(row["ME_MJkg"]), 2) if pd.notna(row["ME_MJkg"]) else 0
             })
         return mix
 
