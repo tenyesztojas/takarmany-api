@@ -5,6 +5,7 @@ import numpy as np
 
 app = Flask(__name__)
 
+# Excel betöltése
 excel_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
 name_columns = excel_data.iloc[:, [12, 13, 14]].astype(str).apply(lambda col: col.str.strip())
 name_columns["RowID"] = name_columns.index
@@ -41,6 +42,7 @@ def calculate():
     data = request.get_json()
     species = data.get("species", "").lower()
     ingredients = data.get("ingredients", [])
+    constraints = data.get("constraints", {})
 
     if species not in specs:
         return jsonify({"error": "Érvénytelen faj!"}), 400
@@ -53,13 +55,30 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
 
+    # Alapanyag kizárás
+    exclude = constraints.get("exclude", [])
+    if exclude:
+        exclude_ids = melted_names[melted_names["Name"].apply(lambda x: matches_any(x, exclude))]["RowID"].unique()
+        df = df[~df["RowID"].isin(exclude_ids)]
+
+    if df.empty:
+        return jsonify({"error": "Minden alapanyag kizárásra került."}), 400
+
     nutrients = ["Protein", "Fat", "Fiber", "ME_MJkg", "Calcium", "Phosphorus", "Lysine", "Methionine"]
     target = specs[species]
     A = df[nutrients].fillna(0).to_numpy().T
     b = np.array([target[n] for n in nutrients])
     n = A.shape[1]
 
-    bounds = [(0, 1) for _ in range(n)]
+    bounds = []
+    max_amount = constraints.get("max_amount_kg", {})
+    for _, row in df.iterrows():
+        name = row["Ingredient"]
+        if name in max_amount:
+            limit = max_amount[name]
+            bounds.append((0, limit / 100))  # kg arányra váltás
+        else:
+            bounds.append((0, 1))
 
     try:
         res = linprog(
