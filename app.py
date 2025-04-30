@@ -5,6 +5,7 @@ app = Flask(__name__)
 
 # Tápanyag- és alapanyag adatbázis betöltése
 ingredient_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
+ingredient_data = ingredient_data.iloc[:, :14]  # Csak az első 14 oszlopot használjuk
 ingredient_data.columns = [
     "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
     "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2", "NaN3"
