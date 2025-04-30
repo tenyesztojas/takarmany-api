@@ -37,7 +37,14 @@ def calculate():
 
     # Szűrés: ha van megadott alapanyag, csak azt használjuk, egyébként az összeset
     if user_ingredients:
-        df = ingredient_data[ingredient_data["Ingredient"].str.lower().isin([i.lower() for i in user_ingredients])]
+        def matches_any(ingredient, search_terms):
+    return any(term.lower() in str(ingredient).lower() for term in search_terms)
+
+if user_ingredients:
+    df = ingredient_data[ingredient_data["Ingredient"].apply(lambda x: matches_any(x, user_ingredients))]
+else:
+    df = ingredient_data.copy()
+
     else:
         df = ingredient_data.copy()
 
