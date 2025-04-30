@@ -3,3 +3,4 @@ pandas
 scipy
 openpyxl
 fpdf==1.7.2
+flask-cors
