@@ -1,42 +1,27 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import pandas as pd
-from scipy.optimize import linprog
 import numpy as np
+from scipy.optimize import linprog
+from pdf_generator import create_pdf
 
 app = Flask(__name__)
 
-# Excel betöltése
-excel_data = pd.read_excel("Takarmany_kalkulator.xlsx", sheet_name="KALKULÁTOR", skiprows=32, nrows=30)
-name_columns = excel_data.iloc[:, [12, 13, 14]].astype(str).apply(lambda col: col.str.strip())
-name_columns["RowID"] = name_columns.index
-
-ingredient_data = excel_data.iloc[:, :13]
-ingredient_data.columns = [
-    "Ingredient", "Price_per_kg", "Currency", "ME_MJkg", "Protein", "Fat", "Fiber",
-    "Calcium", "Phosphorus", "Lysine", "Methionine", "NaN1", "NaN2"
-]
-ingredient_data = ingredient_data.drop(columns=["NaN1", "NaN2"])
-ingredient_data = ingredient_data.dropna(subset=["Ingredient"])
-for col in ["ME_MJkg", "Protein", "Fat", "Fiber", "Calcium", "Phosphorus", "Lysine", "Methionine"]:
-    ingredient_data[col] = pd.to_numeric(ingredient_data[col], errors="coerce")
+# Adatok betöltése
+ingredient_data = pd.read_excel("Takarmány kalkulátor programhoz.xlsx", sheet_name="Adatbázis")
 ingredient_data["RowID"] = ingredient_data.index
+ingredient_data.fillna(0, inplace=True)
 
-melted_names = name_columns.melt(id_vars="RowID", value_name="Name").drop(columns=["variable"])
-melted_names = melted_names[melted_names["Name"] != "nan"]
-melted_names["Name"] = melted_names["Name"].astype(str).str.strip()
+melted_names = ingredient_data[["RowID", "N", "O", "P"]].melt(id_vars="RowID", value_name="Name").dropna()
 
-# faj-specifikus tápanyag célértékek
-specs = {
-    "fürj":   {"Protein": 23.85, "Fat": 3.44, "Fiber": 3.96, "ME_MJkg": 11.5, "Calcium": 2.75, "Phosphorus": 0.5,  "Lysine": 1.2,  "Methionine": 0.5},
-    "tyúk":   {"Protein": 17.0,  "Fat": 4.0,  "Fiber": 4.5,  "ME_MJkg": 11.5, "Calcium": 3.5,  "Phosphorus": 0.4,  "Lysine": 0.9,  "Methionine": 0.4},
-    "kacsa":  {"Protein": 17.0,  "Fat": 4.0,  "Fiber": 5.5,  "ME_MJkg": 11.5, "Calcium": 1.1,  "Phosphorus": 0.45, "Lysine": 0.8,  "Methionine": 0.35},
-    "liba":   {"Protein": 16.0,  "Fat": 3.5,  "Fiber": 6.5,  "ME_MJkg": 10.5, "Calcium": 0.9,  "Phosphorus": 0.4,  "Lysine": 0.75, "Methionine": 0.3},
-    "pulyka": {"Protein": 25.0,  "Fat": 4.0,  "Fiber": 4.5,  "ME_MJkg": 12.5, "Calcium": 1.5,  "Phosphorus": 0.5,  "Lysine": 1.3,  "Methionine": 0.55}
-}
+specs = pd.read_csv("Faj-Fehrje-Zsr-Rost-MetabolizlhatenergiaMJkg-Kalcium-Foszfor-Lizin-Metionin.csv")
+specs = specs.set_index("Faj").T.to_dict()
 
-def matches_any(name, search_terms):
-    name = str(name).lower()
-    return any(term.lower() in name for term in search_terms)
+def matches_any(text, terms):
+    return any(term.lower() in str(text).lower() for term in terms)
+
+@app.route("/download", methods=["GET"])
+def download():
+    return send_file("takarmany_ajanlas.pdf", as_attachment=True)
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
@@ -56,7 +41,6 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Nem találhatók megfelelő alapanyagok."}), 400
 
-    # Kizárt alapanyagok szűrése
     exclude = constraints.get("exclude", [])
     if exclude:
         exclude_ids = melted_names[melted_names["Name"].apply(lambda x: matches_any(x, exclude))]["RowID"].unique()
@@ -65,7 +49,6 @@ def calculate():
     if df.empty:
         return jsonify({"error": "Minden alapanyag kizárásra került."}), 400
 
-    # Optimalizálás
     nutrients = ["Protein", "Fat", "Fiber", "ME_MJkg", "Calcium", "Phosphorus", "Lysine", "Methionine"]
     target = specs[species]
     A = df[nutrients].fillna(0).to_numpy().T
@@ -111,11 +94,14 @@ def calculate():
 
     result = {f"{kg}_kg_mix": generate_mix(kg) for kg in [10, 20, 30, 50, 100]}
 
+    pdf_path = create_pdf(result, species, target)
+
     return jsonify({
         "species": species,
         "target_nutrition": target,
-        "recommendation": result
+        "recommendation": result,
+        "pdf_url": "/download"
     })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
