@@ -3,123 +3,83 @@ from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from scipy.optimize import linprog
-from pdf_generator import generate_pdf
-import base64
 
 app = Flask(__name__)
 CORS(app)
 
+# Excel betöltése
 excel_path = "Takarmány kalkulátor programhoz.xlsx"
 sheet_name = "Adatbázis"
+ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
+
+# Átalakítás (N, O, P oszlopokból összevonás)
+ingredient_data = ingredient_data.dropna(subset=["N", "O", "P"], how="all").copy()
+ingredient_data["RowID"] = ingredient_data.index
+melted = ingredient_data.melt(id_vars=["RowID"], value_vars=["N", "O", "P"], value_name="Name").dropna()
+merged_data = melted.merge(ingredient_data, left_on="RowID", right_index=True)
+
+# Egyszerűsített táblázat a nevek alapján
+merged_data = merged_data.rename(columns={
+    "Name": "ingredient_name",
+    "ME MJ/kg": "me",
+    "Nyers fehérje": "protein",
+    "Nyers zsír min.": "fat",
+    "Nyers rost": "fiber",
+    "Ca": "ca",
+    "P": "p",
+    "Lizin": "lysine",
+    "Metionin": "methionine"
+})
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
     try:
-        data = request.json
+        data = request.get_json()
+
         species = data.get("species")
-        ingredients = data.get("ingredients", [])
+        ingredients_input = data.get("ingredients", [])
         constraints = data.get("constraints", {})
-        exclude = data.get("exclude", [])
-        prices = data.get("prices", {})
 
-        if not species or not ingredients:
-            return jsonify({"error": "Hiányzó faj vagy alapanyagok."}), 400
+        if not ingredients_input:
+            return jsonify({"error": "Nem adtál meg egy alapanyagot sem."}), 400
 
-        df = pd.read_excel(excel_path, sheet_name=sheet_name)
-        melted_names = df[["RowID", "N", "O", "P"]].melt(id_vars="RowID", value_name="Name").dropna()
-        melted_names["Name"] = melted_names["Name"].astype(str).str.strip().str.lower()
-        name_map = dict(zip(melted_names["Name"], melted_names["RowID"]))
+        df = merged_data[merged_data["ingredient_name"].isin(ingredients_input)].copy()
 
-        # Kiválasztott alapanyagok szűrése
-        selected_ids = []
-        for name in ingredients:
-            key = name.strip().lower()
-            if key in name_map:
-                selected_ids.append(name_map[key])
-            else:
-                return jsonify({"error": f"Nincs adat ehhez az alapanyaghoz: {name}"}), 400
-
-        if len(selected_ids) == 0:
+        if df.empty:
             return jsonify({"error": "Nem találhatóak megfelelő alapanyagok."}), 400
 
-        df_selected = df[df["RowID"].isin(selected_ids)].copy()
+        nutrient_columns = ["protein", "me", "fiber", "fat", "ca", "p", "lysine", "methionine"]
 
-        # Tápanyagcélok beállítása faj alapján (egyszerűsített példa)
-        nutrition_targets = {
-            "tyúk": {"ME MJ/kg": 11, "Nyers fehérje": 16, "Nyers rost": 5},
-            "kacsa": {"ME MJ/kg": 11.5, "Nyers fehérje": 17, "Nyers rost": 5},
-            "liba": {"ME MJ/kg": 11.8, "Nyers fehérje": 18, "Nyers rost": 6}
+        A = df[nutrient_columns].fillna(0).to_numpy().T
+        c = np.ones(len(df))  # minimalizáljuk az össztömeget
+
+        # Cél: legalább ennyit teljesítsen a tápanyagokból
+        target_nutrients = {
+            "protein": 16,
+            "me": 11,
+            "fiber": 5,
+            "fat": 2,
+            "ca": 0.8,
+            "p": 0.6,
+            "lysine": 0.5,
+            "methionine": 0.25
         }
 
-        target = nutrition_targets.get(species.lower())
-        if not target:
-            return jsonify({"error": "Ismeretlen faj"}), 400
+        b = np.array([target_nutrients[n] for n in nutrient_columns])
+        res = linprog(c=c, A_ub=-A, b_ub=-b, bounds=(0, None), method='highs')
 
-        nutrients = ["ME MJ/kg", "Nyers fehérje", "Nyers rost"]
-
-        A = []
-        b = []
-        for nutrient in nutrients:
-            A.append(df_selected[nutrient].values)
-            b.append(target[nutrient])
-
-        A_eq = [np.ones(len(df_selected))]
-        b_eq = [1.0]
-
-        bounds = []
-        for idx, row in df_selected.iterrows():
-            min_amount = 0
-            max_amount = 1
-            fajta = str(row["O"]).strip().lower()
-            if fajta in constraints.get("max_amount", {}):
-                max_amount = float(constraints["max_amount"][fajta])
-            if fajta in constraints.get("min_amount", {}):
-                min_amount = float(constraints["min_amount"][fajta])
-            if fajta in exclude:
-                max_amount = 0
-            bounds.append((min_amount, max_amount))
-
-        cost = []
-        for idx, row in df_selected.iterrows():
-            fajta = str(row["O"]).strip().lower()
-            cost.append(float(prices.get(fajta, 0)))
-
-        res = linprog(
-            c=cost,
-            A_eq=A_eq,
-            b_eq=b_eq,
-            A_ub=A,
-            b_ub=b,
-            bounds=bounds,
-            method='highs'
-        )
-
-        if not res.success:
+        if res.success:
+            result = {
+                "species": species,
+                "target_nutrition": target_nutrients,
+                "recommendation": dict(zip(df["ingredient_name"], res.x.round(3).tolist()))
+            }
+            return jsonify(result)
+        else:
             return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
-
-        proportions = res.x
-        result = []
-        for i, val in enumerate(proportions):
-            if val > 0:
-                row = df_selected.iloc[i]
-                result.append({
-                    "name": row["O"],
-                    "percentage": round(val * 100, 2),
-                    "amount_kg": round(val * 100, 2)
-                })
-
-        pdf_bytes = generate_pdf(result, species, target)
-        encoded_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-
-        return jsonify({
-            "species": species,
-            "recommendation": result,
-            "target_nutrition": target,
-            "pdf_base64": encoded_pdf
-        })
 
     except Exception as e:
         return jsonify({"error": f"Hiba: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0")
+    app.run(host="0.0.0.0", port=5000)
