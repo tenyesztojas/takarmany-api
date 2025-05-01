@@ -1,6 +1,5 @@
-flask
-pandas
-openpyxl
-fpdf
+Flask
 flask-cors
-gunicorn
+pandas
+numpy
+openpyxl
