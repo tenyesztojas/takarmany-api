@@ -2,89 +2,74 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 from scipy.optimize import linprog
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
 
-# Excel betöltése
-excel_path = "Takarmány kalkulátor programhoz.xlsx"
-sheet_name = "Adatbázis"
-ingredient_data = pd.read_excel(excel_path, sheet_name=sheet_name)
-ingredient_data = ingredient_data.dropna(subset=["N", "O", "P"], how="all").copy()
-
 @app.route("/calculate", methods=["POST"])
 def calculate():
     try:
-        data = request.get_json()
-        species = data.get("species", "")
-        ingredients = data.get("ingredients", [])
-        constraints = data.get("constraints", {})
-        max_amount = constraints.get("max_amount", {})
-        exclude = constraints.get("exclude", [])
-        prices = constraints.get("prices", {})
+        # Excel betöltése
+        excel_path = "Takarmany_kalkulator.xlsx"
+        df = pd.read_excel(excel_path)
 
-        # Csak a kiválasztott alapanyagok
-        df = ingredient_data[ingredient_data["O"].isin(ingredients)].copy()
+        # Hiányzó értékek kiszűrése
+        required_cols = ["ME MJ/kg", "Nyers fehérje", "Nyers zsír min.", "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"]
+        df_clean = df.dropna(subset=required_cols).copy()
 
-        if df.empty:
-            return jsonify({"error": "A megadott alapanyagokkal nem érhető el az optimális keverék."}), 400
+        # Alapanyagok listája
+        ingredients = df_clean["Takarmány alapanyag"].tolist()
 
-        if exclude:
-            df = df[~df["O"].isin(exclude)]
+        # Tápanyag mátrix (egy sor: 1kg adott alapanyag tápanyagtartalma)
+        nutrition_matrix = df_clean[required_cols].values.T
 
-        if df.empty:
-            return jsonify({"error": "Minden alapanyag ki van zárva. Kérlek, adj meg legalább egy használható alapanyagot."}), 400
-
-        # Ár mező
-        df["ár"] = df["C"]
-
-        # Tápérték cél
-        target = {
-            "fehérje": 16,
-            "rost": 5,
-            "energia": 10
+        # Cél tápanyagértékek (pl. egy tojótyúk számára – igény szerint állítható)
+        target_nutrition = {
+            "ME MJ/kg": 11.5,
+            "Nyers fehérje": 17,
+            "Nyers zsír min.": 2.5,
+            "Nyers rost": 5,
+            "Kalcium": 3.5,
+            "Foszfor": 0.5,
+            "Lizin": 0.75,
+            "Metionin": 0.25
         }
 
-        A_eq = [
-            df["F"].tolist(),  # nyers fehérje
-            df["H"].tolist(),  # nyers rost
-            df["E"].tolist(),  # ME MJ/kg
-        ]
-        b_eq = [
-            target["fehérje"],
-            target["rost"],
-            target["energia"]
-        ]
+        b = np.array([target_nutrition[nutrient] for nutrient in required_cols])
 
-        bounds = []
-        for i, row in df.iterrows():
-            max_kg = max_amount.get(row["O"], None)
-            if max_kg is not None:
-                bounds.append((0, float(max_kg)))
-            else:
-                bounds.append((0, None))
+        # Költségvektor (egységár helyett itt egyenlő súlyozást használunk, később cserélhető)
+        c = np.ones(len(df_clean))
 
-        # Ár célfüggvény
-        c = df["ár"].tolist()
+        # Egyenlőtlenségi feltételek: minden tápanyag legalább a célérték legyen
+        A = -nutrition_matrix
+        b_ub = -b
 
-        res = linprog(c=c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+        # Korlátozások: nemnegatív tömegek, összsúly = 100kg
+        bounds = [(0, None) for _ in range(len(df_clean))]
 
-        if res.success:
-            amounts = res.x
-            results = {}
-            for i, row in df.iterrows():
-                results[row["O"]] = round(amounts[i], 3)
+        # Egyenlőségfeltétel: össztömeg = 100kg
+        A_eq = [np.ones(len(df_clean))]
+        b_eq = [100]
 
-            return jsonify({
-                "recommendation": results,
-                "species": species,
-                "target_nutrition": target
-            })
+        # Lineáris programozás futtatása
+        result = linprog(c=c, A_ub=A, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs")
+
+        if result.success:
+            quantities = result.x
+            response = {
+                "recommendation": {
+                    ingredients[i]: round(quantities[i], 2) for i in range(len(ingredients)) if quantities[i] > 0
+                },
+                "target_nutrition": target_nutrition,
+            }
+            return jsonify(response)
         else:
             return jsonify({"error": "Nem sikerült optimalizálni az arányokat."}), 400
 
     except Exception as e:
         return jsonify({"error": f"Hiba: {str(e)}"}), 500
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True, port=5000)
