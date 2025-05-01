@@ -1,72 +1,129 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/calculate', methods=['POST'])
-def calculate():
+EXCEL_PATH = "Takarmany_kalkulator.xlsx"
+SHEET_NAME = "adatbazis"
+
+# Célértékek fajonként
+CELERTEKEK = {
+    "Fürj": {
+        "Fehérje": 23.85,
+        "Zsír": 3.44,
+        "Rost_max": 3.96,
+        "Lizin": 1.42,
+        "Metionin": 0.35,
+        "Kalcium_min": 2.5,
+        "Kalcium_max": 3.0,
+        "Foszfor_min": 0.6,
+        "Foszfor_max": 0.8,
+        "Energia_min": 11,
+        "Energia_max": 12,
+    },
+    "Tyúk": {
+        "Fehérje": 17,
+        "Zsír": 4,
+        "Rost_max": 5,
+        "Lizin": 0.75,
+        "Metionin": 0.325,
+        "Kalcium_min": 3.5,
+        "Kalcium_max": 3.5,
+        "Foszfor_min": 0.35,
+        "Foszfor_max": 0.45,
+        "Energia_min": 11,
+        "Energia_max": 12,
+    },
+    "Pulyka": {
+        "Fehérje": 25,
+        "Zsír": 4,
+        "Rost_max": 5,
+        "Lizin": 1.55,
+        "Metionin": 0.5,
+        "Kalcium_min": 1.2,
+        "Kalcium_max": 2.0,
+        "Foszfor_min": 0.7,
+        "Foszfor_max": 0.8,
+        "Energia_min": 12,
+        "Energia_max": 13,
+    },
+    "Kacsa": {
+        "Fehérje": 17,
+        "Zsír": 4,
+        "Rost_max": 6,
+        "Lizin": 0.75,
+        "Metionin": 0.325,
+        "Kalcium_min": 1.0,
+        "Kalcium_max": 1.2,
+        "Foszfor_min": 0.4,
+        "Foszfor_max": 0.5,
+        "Energia_min": 11,
+        "Energia_max": 12,
+    },
+    "Liba": {
+        "Fehérje": 16,
+        "Zsír": 3.5,
+        "Rost_max": 7,
+        "Lizin": 0.75,
+        "Metionin": 0.325,
+        "Kalcium_min": 0.8,
+        "Kalcium_max": 1.0,
+        "Foszfor_min": 0.4,
+        "Foszfor_max": 0.5,
+        "Energia_min": 10,
+        "Energia_max": 11,
+    }
+}
+
+@app.route('/kalkulal', methods=['POST'])
+def kalkulal():
     try:
-        # Excel beolvasása kisbetűs munkalapról
-        excel_path = 'Takarmany_kalkulator.xlsx'
-        df = pd.read_excel(excel_path, sheet_name='adatbazis')
+        faj = request.json.get("faj")
+        if faj not in CELERTEKEK:
+            return jsonify({"error": "Ismeretlen faj!"}), 400
 
-        # Csak a nem hiányzó kulcsoszlopokkal dolgozunk
-        df = df.dropna(subset=[
-            "ME MJ/kg", "Nyers fehérje", "Nyers zsír min.",
-            "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"
-        ])
+        c = CELERTEKEK[faj]
 
-        response = {
-            "message": "Sikeres Excel-beolvasás az 'adatbazis' munkalapról.",
-            "sorok_szama": len(df)
+        df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
+        df = df.dropna(subset=["ME MJ/kg", "Nyers fehérje", "Nyers zsír min.", "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"])
+        
+        # Egyszerű keverék: mindenből 1 kg
+        df["Mennyiség_kg"] = 1
+
+        # Összes beltartalom számítása
+        osszes = {
+            "Fehérje": np.sum(df["Nyers fehérje"] * df["Mennyiség_kg"]),
+            "Zsír": np.sum(df["Nyers zsír min."] * df["Mennyiség_kg"]),
+            "Rost": np.sum(df["Nyers rost"] * df["Mennyiség_kg"]),
+            "Lizin": np.sum(df["Lizin"] * df["Mennyiség_kg"]),
+            "Metionin": np.sum(df["Metionin"] * df["Mennyiség_kg"]),
+            "Kalcium": np.sum(df["Kalcium"] * df["Mennyiség_kg"]),
+            "Foszfor": np.sum(df["Foszfor"] * df["Mennyiség_kg"]),
+            "Energia": np.sum(df["ME MJ/kg"] * df["Mennyiség_kg"]),
         }
-        return jsonify(response), 200
+
+        total_kg = np.sum(df["Mennyiség_kg"])
+        atlag = {k: round(v / total_kg, 2) for k, v in osszes.items()}
+
+        return jsonify({
+            "faj": faj,
+            "celertekek": c,
+            "eredmeny": atlag,
+            "ossz_mennyiseg_kg": total_kg
+        })
 
     except Exception as e:
-        return jsonify({"error": f"Hiba: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-
-@app.route('/', methods=['GET'])
-def home():
-    return "Takarmány Kalkulátor API működik."
-
-if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=10000)
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import pandas as pd
-
-app = Flask(__name__)
-CORS(app)
-
-@app.route('/calculate', methods=['POST'])
-def calculate():
-    try:
-        # Excel beolvasása kisbetűs munkalapról
-        excel_path = 'Takarmany_kalkulator.xlsx'
-        df = pd.read_excel(excel_path, sheet_name='adatbazis')
-
-        # Csak a nem hiányzó kulcsoszlopokkal dolgozunk
-        df = df.dropna(subset=[
-            "ME MJ/kg", "Nyers fehérje", "Nyers zsír min.",
-            "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"
-        ])
-
-        response = {
-            "message": "Sikeres Excel-beolvasás az 'adatbazis' munkalapról.",
-            "sorok_szama": len(df)
-        }
-        return jsonify(response), 200
-
-    except Exception as e:
-        return jsonify({"error": f"Hiba: {str(e)}"}), 500
-
-
-@app.route('/', methods=['GET'])
-def home():
-    return "Takarmány Kalkulátor API működik."
+@app.route('/')
+def index():
+    return jsonify({
+        "message": "Takarmánykalkulátor API aktív.",
+        "utasítás": "POST /kalkulal { 'faj': 'Tyúk' }"
+    })
 
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=10000)
+    app.run(host='0.0.0.0', port=5000)
