@@ -1,5 +1,4 @@
-Flask
+flask
 flask-cors
 pandas
-numpy
 openpyxl
