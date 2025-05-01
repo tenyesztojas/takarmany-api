@@ -88,12 +88,13 @@ def kalkulal():
         c = CELERTEKEK[faj]
 
         df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
-        df = df.dropna(subset=["ME MJ/kg", "Nyers fehérje", "Nyers zsír min.", "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"])
-        
-        # Egyszerű keverék: mindenből 1 kg
+        df = df.dropna(subset=[
+            "ME MJ/kg", "Nyers fehérje", "Nyers zsír min.",
+            "Nyers rost", "Kalcium", "Foszfor", "Lizin", "Metionin"
+        ])
+
         df["Mennyiség_kg"] = 1
 
-        # Összes beltartalom számítása
         osszes = {
             "Fehérje": np.sum(df["Nyers fehérje"] * df["Mennyiség_kg"]),
             "Zsír": np.sum(df["Nyers zsír min."] * df["Mennyiség_kg"]),
