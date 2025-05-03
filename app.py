@@ -3,7 +3,6 @@ from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from fpdf import FPDF
-import os
 
 app = Flask(__name__)
 CORS(app)
@@ -11,13 +10,12 @@ CORS(app)
 EXCEL_PATH = "Takarmany_kalkulator.xlsx"
 SHEET_NAME = "adatbazis"
 
-# Fajspecifikus célértékek
 CELERTEKEK = {
     "Fürj": {"Fehérje": 23.85, "Energia": 11.5},
-    "Tyúk": {"Fehérje": 17.0, "Energia": 11.5},
-    "Pulyka": {"Fehérje": 25.0, "Energia": 12.5},
-    "Kacsa": {"Fehérje": 17.0, "Energia": 11.5},
-    "Liba": {"Fehérje": 16.0, "Energia": 10.5}
+    "Tyúk": {"Fehérje": 17, "Energia": 11.5},
+    "Pulyka": {"Fehérje": 25, "Energia": 12.5},
+    "Kacsa": {"Fehérje": 17, "Energia": 11.5},
+    "Liba": {"Fehérje": 16, "Energia": 10.5},
 }
 
 @app.route('/kalkulal', methods=['POST'])
@@ -27,30 +25,25 @@ def kalkulal():
         faj = adatok.get("faj")
         alapanyagok = adatok.get("alapanyagok")  # lista
 
-        if faj not in CELERTEKEK:
-            return jsonify({"error": "Ismeretlen faj"}), 400
+        if not faj or faj not in CELERTEKEK:
+            return jsonify({"error": "Ismeretlen vagy hiányzó faj."}), 400
 
-        if not alapanyagok or not isinstance(alapanyagok, list):
-            return jsonify({"error": "Nem adtál meg alapanyagokat"}), 400
+        if not alapanyagok:
+            return jsonify({"error": "Nem adtál meg egy alapanyagot sem!"}), 400
 
         df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
-        df = df[df["Takarmány alapanyag"].isin(alapanyagok)]
+        df = df[df["Takarmány alapanyag"].str.lower().isin([a.lower() for a in alapanyagok])]
 
         if df.empty:
-            return jsonify({"error": "Egyik alapanyag sem található az adatbázisban."}), 400
+            return jsonify({"error": "Egyik megadott alapanyag sem található az adatbázisban."}), 400
 
         df["Arány"] = 1 / len(df)
 
-        cel = CELERTEKEK[faj]
-        feherje = (df["Nyers fehérje"] * df["Arány"]).sum()
-        energia = (df["ME MJ/kg"] * df["Arány"]).sum()
-
         eredmeny = {
-            "Fehérje": round(feherje, 2),
-            "Energia": round(energia, 2)
+            "Fehérje": round((df["Nyers fehérje"] * df["Arány"]).sum(), 2),
+            "Energia": round((df["ME MJ/kg"] * df["Arány"]).sum(), 2)
         }
 
-        # Mennyiségi receptek
         mennyisegek = [10, 20, 30, 50, 100]
         receptek = {}
 
@@ -62,10 +55,9 @@ def kalkulal():
             receptek[f"{m} kg"] = keverek
 
         pdf_path = create_pdf(faj, eredmeny, receptek)
-
         return jsonify({
             "faj": faj,
-            "celertekek": cel,
+            "celertekek": CELERTEKEK[faj],
             "elert_ertekek": eredmeny,
             "receptek": receptek,
             "pdf_url": "/pdf"
@@ -75,31 +67,29 @@ def kalkulal():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/pdf')
-def letolt_pdf():
+def pdf_letoltes():
     return send_file("recept.pdf", as_attachment=True)
 
 def create_pdf(faj, eredmeny, receptek):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt=f"{faj} - Takarmányrecept", ln=True, align="C")
+
+    pdf.cell(200, 10, txt=f"{faj} - Takarmányrecept", ln=True, align='C')
     pdf.ln(10)
-    pdf.cell(200, 10, txt=f"Elért értékek - Fehérje: {eredmeny['Fehérje']}%, Energia: {eredmeny['Energia']} MJ/kg", ln=True)
+    pdf.cell(200, 10, txt=f"Fehérje: {eredmeny['Fehérje']}%, Energia: {eredmeny['Energia']} MJ/kg", ln=True)
 
     for mennyiseg, keverek in receptek.items():
-        pdf.ln(8)
+        pdf.ln(10)
         pdf.set_font("Arial", "B", 12)
         pdf.cell(200, 10, txt=f"{mennyiseg} recept:", ln=True)
         pdf.set_font("Arial", size=12)
         for alapanyag, kg in keverek.items():
-            pdf.cell(200, 8, txt=f"{alapanyag}: {kg} kg", ln=True)
+            pdf.cell(200, 10, txt=f"{alapanyag}: {kg} kg", ln=True)
 
     pdf.output("recept.pdf")
     return "recept.pdf"
 
 @app.route('/')
 def index():
-    return jsonify({"message": "Takarmánykalkulátor API aktív. POST /kalkulal"})
-
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+    return jsonify({"message": "API működik. POST: /kalkulal"})
