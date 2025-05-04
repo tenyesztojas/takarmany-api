@@ -1,95 +1,85 @@
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+# app.py
+from flask import Flask, request, render_template
 import pandas as pd
 import numpy as np
-from fpdf import FPDF
+from scipy.optimize import minimize
 
 app = Flask(__name__)
-CORS(app)
 
-EXCEL_PATH = "Takarmany_kalkulator.xlsx"
-SHEET_NAME = "adatbazis"
-
-CELERTEKEK = {
-    "Fürj": {"Fehérje": 23.85, "Energia": 11.5},
-    "Tyúk": {"Fehérje": 17, "Energia": 11.5},
-    "Pulyka": {"Fehérje": 25, "Energia": 12.5},
-    "Kacsa": {"Fehérje": 17, "Energia": 11.5},
-    "Liba": {"Fehérje": 16, "Energia": 10.5},
+targets = {
+    'tojó tyúk': {
+        'Nyers fehérje': (16, 18),
+        'Nyers zsír min.': (3, 5),
+        'Nyers rost': (4, 5),
+        'Lizin': (0.7, 0.8),
+        'Metionin': (0.3, 0.35),
+        'Kalcium': (3.5, 3.5),
+        'Foszfor': (0.35, 0.45),
+        'ME MJ/kg': (11, 12)
+    },
+    'tojó fürj': {
+        'Nyers fehérje': (23, 25),
+        'Nyers zsír min.': (3, 5),
+        'Nyers rost': (3, 4),
+        'Lizin': (1.4, 1.5),
+        'Metionin': (0.35, 0.4),
+        'Kalcium': (2.5, 3.0),
+        'Foszfor': (0.6, 0.8),
+        'ME MJ/kg': (11, 12)
+    }
 }
 
-@app.route('/kalkulal', methods=['POST'])
-def kalkulal():
-    try:
-        adatok = request.json
-        faj = adatok.get("faj")
-        alapanyagok = adatok.get("alapanyagok")  # lista
+# Alapanyag-adatbázis betöltése
+feed_data = pd.read_excel("Takarmany_kalkulator.xlsx")
+feed_data.fillna(0, inplace=True)
 
-        if not faj or faj not in CELERTEKEK:
-            return jsonify({"error": "Ismeretlen vagy hiányzó faj."}), 400
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    result = None
+    if request.method == 'POST':
+        faj = request.form['faj']
+        alapanyagok = request.form['alapanyagok'].lower().split(',')
+        szójamentes = 'szójamentes' in request.form
 
-        if not alapanyagok:
-            return jsonify({"error": "Nem adtál meg egy alapanyagot sem!"}), 400
+        # Szűrés a megadott alapanyagokra
+        df = feed_data[feed_data['Takarmány alapanyag'].str.lower().apply(
+            lambda x: any(ingredient.strip() in x for ingredient in alapanyagok)
+        )].copy()
 
-        df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
-        df = df[df["Takarmány alapanyag"].str.lower().isin([a.lower() for a in alapanyagok])]
+        if szójamentes:
+            df = df[~df['Takarmány alapanyag'].str.lower().str.contains('szója')]
 
         if df.empty:
-            return jsonify({"error": "Egyik megadott alapanyag sem található az adatbázisban."}), 400
+            result = 'Nincs elérhető alapanyag a megadott listából.'
+        else:
+            nutrient_cols = list(targets[faj].keys())
+            A = df[nutrient_cols].to_numpy().T
+            maxima = df['Maximum mennyiség takarmánykeverékben'].values * 100
+            bounds = [(0, max_v) for max_v in maxima]
+            x0 = np.ones(len(df)) * (100 / len(df))
 
-        df["Arány"] = 1 / len(df)
+            def objective(x):
+                total_weight = np.sum(x)
+                blend = A @ x / total_weight
+                error = 0
+                for i, (low, high) in enumerate(targets[faj].values()):
+                    target = (low + high) / 2
+                    error += (blend[i] - target) ** 2
+                return error
 
-        eredmeny = {
-            "Fehérje": round((df["Nyers fehérje"] * df["Arány"]).sum(), 2),
-            "Energia": round((df["ME MJ/kg"] * df["Arány"]).sum(), 2)
-        }
+            constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 100}]
+            res = minimize(objective, x0, bounds=bounds, constraints=constraints)
 
-        mennyisegek = [10, 20, 30, 50, 100]
-        receptek = {}
+            if res.success:
+                df_result = pd.DataFrame({
+                    'Alapanyag': df['Takarmány alapanyag'],
+                    'Mennyiség (kg)': res.x
+                })
+                result = df_result[df_result['Mennyiség (kg)'] > 0.1].round(2).to_html(index=False)
+            else:
+                result = 'Nem sikerült optimális keveréket számolni.'
 
-        for m in mennyisegek:
-            keverek = {
-                sor["Takarmány alapanyag"]: round(sor["Arány"] * m, 2)
-                for _, sor in df.iterrows()
-            }
-            receptek[f"{m} kg"] = keverek
+    return render_template('index.html', result=result)
 
-        pdf_path = create_pdf(faj, eredmeny, receptek)
-        return jsonify({
-            "faj": faj,
-            "celertekek": CELERTEKEK[faj],
-            "elert_ertekek": eredmeny,
-            "receptek": receptek,
-            "pdf_url": "/pdf"
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/pdf')
-def pdf_letoltes():
-    return send_file("recept.pdf", as_attachment=True)
-
-def create_pdf(faj, eredmeny, receptek):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-
-    pdf.cell(200, 10, txt=f"{faj} - Takarmányrecept", ln=True, align='C')
-    pdf.ln(10)
-    pdf.cell(200, 10, txt=f"Fehérje: {eredmeny['Fehérje']}%, Energia: {eredmeny['Energia']} MJ/kg", ln=True)
-
-    for mennyiseg, keverek in receptek.items():
-        pdf.ln(10)
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(200, 10, txt=f"{mennyiseg} recept:", ln=True)
-        pdf.set_font("Arial", size=12)
-        for alapanyag, kg in keverek.items():
-            pdf.cell(200, 10, txt=f"{alapanyag}: {kg} kg", ln=True)
-
-    pdf.output("recept.pdf")
-    return "recept.pdf"
-
-@app.route('/')
-def index():
-    return jsonify({"message": "API működik. POST: /kalkulal"})
+if __name__ == '__main__':
+    app.run(debug=True)
