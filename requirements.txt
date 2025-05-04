@@ -1,6 +1,5 @@
-flask
-flask-cors
-pandas
-openpyxl
-numpy
-fpdf
+Flask==2.3.2
+pandas==2.2.1
+numpy==1.26.4
+scipy==1.13.0
+openpyxl==3.1.2
