@@ -1,0 +1,53 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <title>Takarmánykalkulátor</title>
+</head>
+<body>
+    <h1>Takarmánykalkulátor – 100 kg-os keverék</h1>
+    
+    <form method="POST">
+        <label for="faj">Válaszd ki az állatfajt:</label>
+        <select name="faj" id="faj" required>
+            <option value="tojó tyúk">Tojó tyúk</option>
+            <option value="tojó fürj">Tojó fürj</option>
+            <option value="pulyka">Pulyka</option>
+            <option value="kacsa">Kacsa</option>
+            <option value="liba">Liba</option>
+        </select>
+        <br><br>
+
+        <label for="alapanyagok">Milyen alapanyagaid vannak otthon? (vesszővel elválasztva)</label><br>
+        <textarea name="alapanyagok" id="alapanyagok" rows="3" cols="50" placeholder="Pl.: búza, kukorica, takarmánymész" required></textarea>
+        <br><br>
+
+        <input type="checkbox" id="szojamentes" name="szojamentes">
+        <label for="szojamentes">Szójamentes keveréket szeretnék</label>
+        <br><br>
+
+        <button type="submit">Kalkuláció indítása</button>
+    </form>
+
+    {% if eredmeny %}
+        <h2>Javasolt takarmánykeverék:</h2>
+        <table border="1">
+            <tr>
+                <th>Alapanyag</th>
+                <th>Mennyiség (kg)</th>
+            </tr>
+            {% for sor in eredmeny %}
+                <tr>
+                    <td>{{ sor['Alapanyag'] }}</td>
+                    <td>{{ "%.2f"|format(sor['Mennyiség (kg)']) }}</td>
+                </tr>
+            {% endfor %}
+        </table>
+    {% endif %}
+
+    {% if uzenet %}
+        <p><strong>{{ uzenet }}</strong></p>
+    {% endif %}
+</body>
+</html>
